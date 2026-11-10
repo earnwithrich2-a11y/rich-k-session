@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RICH K – Scan WhatsApp QR Code</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', sans-serif;
+      background: #08090d;
+      color: #f1f5f9;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem 1rem;
+    }
+    .card {
+      background: #111319;
+      border: 1px solid rgba(234, 179, 8, 0.25);
+      border-radius: 20px;
+      padding: 2rem 1.5rem;
+      max-width: 440px;
+      width: 100%;
+      text-align: center;
+    }
+    .logo-badge {
+      width: 55px;
+      height: 55px;
+      margin: 0 auto 1rem;
+      border-radius: 14px;
+      background: linear-gradient(135deg, #eab308, #ca8a04);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #000;
+      font-size: 1.5rem;
+      font-weight: 800;
+    }
+    h1 { font-size: 1.3rem; margin-bottom: 0.3rem; }
+    p.subtitle { font-size: 0.85rem; color: #94a3b8; margin-bottom: 1.5rem; }
+    .qr-container {
+      background: #fff;
+      padding: 12px;
+      border-radius: 16px;
+      display: inline-block;
+      margin: 0 auto 1rem;
+      min-width: 250px;
+      min-height: 250px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .qr-img { width: 240px; height: 240px; display: block; border-radius: 8px; }
+    .spinner { color: #000; font-size: 2rem; }
+    .btn {
+      width: 100%;
+      background: linear-gradient(135deg, #eab308, #ca8a04);
+      color: #000;
+      font-weight: 700;
+      padding: 0.8rem;
+      border: none;
+      border-radius: 12px;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-block;
+      margin-top: 0.5rem;
+    }
+    .back-link {
+      display: inline-block;
+      margin-top: 1rem;
+      font-size: 0.85rem;
+      color: #eab308;
+      text-decoration: none;
+    }
+    .session-box {
+      margin-top: 1rem;
+      display: none;
+      text-align: left;
+    }
+    .session-text {
+      width: 100%;
+      height: 70px;
+      background: #0d0f14;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      color: #22c55e;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      padding: 0.5rem;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo-badge">RK</div>
+    <h1>Scan WhatsApp QR Code</h1>
+    <p class="subtitle">Open WhatsApp → Linked Devices → Link a device</p>
+
+    <div class="qr-container" id="qrContainer">
+      <i class="fa-solid fa-spinner fa-spin spinner" id="qrSpinner"></i>
+      <img id="qrImg" class="qr-img" style="display:none;" alt="QR Code" />
+    </div>
+
+    <div id="statusText" style="font-size:0.85rem; color:#eab308; margin-bottom:0.5rem;">
+      Generating live QR code...
+    </div>
+
+    <div class="session-box" id="sessionBox">
+      <textarea class="session-text" id="sessionInput" readonly></textarea>
+      <button class="btn" onclick="copySession()"><i class="fa-regular fa-copy"></i> Copy Session ID</button>
+    </div>
+
+    <div>
+      <a href="/" class="back-link"><i class="fa-solid fa-arrow-left"></i> Use Pairing Code instead</a>
+    </div>
+  </div>
+
+  <script>
+    let pollInterval = null;
+
+    async function loadQR() {
+      try {
+        const res = await fetch('/qr-code');
+        const data = await res.json();
+
+        if (data.error) {
+          document.getElementById('statusText').innerText = 'Error: ' + data.error;
+          return;
+        }
+
+        document.getElementById('qrSpinner').style.display = 'none';
+        const img = document.getElementById('qrImg');
+        img.src = data.qr;
+        img.style.display = 'block';
+        document.getElementById('statusText').innerText = 'Scan this with WhatsApp now!';
+
+        startPolling(data.id);
+      } catch (err) {
+        document.getElementById('statusText').innerText = 'Failed to load QR code. Refresh to try again.';
+      }
+    }
+
+    function startPolling(id) {
+      pollInterval = setInterval(async () => {
+        try {
+          const res = await fetch(`/status?id=${id}`);
+          const data = await res.json();
+
+          if (data.sessionId) {
+            clearInterval(pollInterval);
+            document.getElementById('qrContainer').style.display = 'none';
+            document.getElementById('statusText').innerHTML = '<span style="color:#22c55e"><i class="fa-solid fa-circle-check"></i> Connected! Session generated.</span>';
+            document.getElementById('sessionInput').value = data.sessionId;
+            document.getElementById('sessionBox').style.display = 'block';
+          }
+        } catch (e) {}
+      }, 3000);
+    }
+
+    function copySession() {
+      const sess = document.getElementById('sessionInput').value;
+      navigator.clipboard.writeText(sess);
+      alert('Session ID copied to clipboard!');
+    }
+
+    loadQR();
+  </script>
+</body>
+</html>
