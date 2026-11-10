@@ -98,6 +98,36 @@
     button.btn:active { transform: scale(0.98); }
     button.btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
+    .btn-qr {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      width: 100%;
+      background: #1a1d26;
+      border: 1px solid #334155;
+      color: #cbd5e1;
+      padding: 0.8rem;
+      border-radius: 12px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 0.9rem;
+      transition: all 0.2s;
+    }
+    .btn-qr:hover {
+      border-color: #eab308;
+      color: #eab308;
+    }
+
+    .divider {
+      margin: 1.25rem 0;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .divider-line { flex: 1; height: 1px; background: #334155; }
+    .divider-text { font-size: 0.75rem; color: #64748b; text-transform: uppercase; font-weight: 600; }
+
     .result-box {
       margin-top: 1.5rem;
       background: #1a1d26;
@@ -181,6 +211,16 @@
     <button class="btn" id="submitBtn" onclick="requestPairing()">
       <i class="fa-solid fa-key"></i> Get Pairing Code
     </button>
+
+    <div class="divider">
+      <div class="divider-line"></div>
+      <span class="divider-text">or</span>
+      <div class="divider-line"></div>
+    </div>
+
+    <a href="/qr.html" class="btn-qr">
+      <i class="fa-solid fa-qrcode"></i> Scan QR Code Instead
+    </a>
 
     <div class="result-box" id="resultBox">
       <p class="instruction">Enter this code on your WhatsApp notification or <strong>Linked Devices → Link with phone number</strong>:</p>
@@ -292,3 +332,4 @@
   </script>
 </body>
 </html>
+
