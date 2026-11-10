@@ -1,0 +1,14 @@
+{
+  "name": "rich-k-session",
+  "version": "1.0.0",
+  "description": "RICH K WhatsApp Session Generator",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.12",
+    "express": "^4.21.2",
+    "pino": "^9.6.0"
+  }
+}
