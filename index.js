@@ -8,7 +8,7 @@ const {
   useMultiFileAuthState,
   delay,
   DisconnectReason,
-  Browsers,
+  makeCacheableSignalKeyStore,
   fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys');
 
@@ -41,88 +41,108 @@ app.get('/pair', async (req, res) => {
   const id = 'sess_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
   const sessionDir = path.join('/tmp', id);
 
-  try {
-    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-    const { version } = await fetchLatestBaileysVersion();
+  const sessionData = {
+    id,
+    phone,
+    dir: sessionDir,
+    sock: null,
+    code: null,
+    sessionId: null,
+    status: 'requesting_code',
+    error: null
+  };
+  activeSessions.set(id, sessionData);
 
-    const sock = makeWASocket({
-      version,
-      auth: state,
-      printQRInTerminal: false,
-      logger: pino({ level: 'silent' }),
-      browser: Browsers.macOS('Chrome')
-    });
+  async function startPairingSocket() {
+    try {
+      const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+      const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1015901307] }));
 
-    sock.ev.on('creds.update', saveCreds);
+      const sock = makeWASocket({
+        version,
+        auth: {
+          creds: state.creds,
+          keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' }))
+        },
+        printQRInTerminal: false,
+        logger: pino({ level: 'fatal' }),
+        browser: ['Chrome (Linux)', '', '']
+      });
 
-    const sessionData = {
-      id,
-      phone,
-      dir: sessionDir,
-      sock,
-      code: null,
-      sessionId: null,
-      status: 'requesting_code',
-      error: null
-    };
-    activeSessions.set(id, sessionData);
+      sessionData.sock = sock;
+      sock.ev.on('creds.update', saveCreds);
 
-    await delay(2500);
+      // Request pairing code only if not yet registered
+      if (!sock.authState.creds.registered && !sessionData.code) {
+        await delay(2000);
+        let code = await sock.requestPairingCode(phone);
+        code = code?.match(/.{1,4}/g)?.join('-') || code;
+        sessionData.code = code;
+        sessionData.status = 'code_ready';
 
-    let code = await sock.requestPairingCode(phone);
-    code = code?.match(/.{1,4}/g)?.join('-') || code;
-
-    sessionData.code = code;
-    sessionData.status = 'code_ready';
-
-    sock.ev.on('connection.update', async (update) => {
-      const { connection, lastDisconnect } = update;
-
-      if (connection === 'open') {
-        sessionData.status = 'connected';
-        try {
-          await delay(3000);
-          const credsPath = path.join(sessionDir, 'creds.json');
-          if (fs.existsSync(credsPath)) {
-            const credsRaw = fs.readFileSync(credsPath, 'utf-8');
-            const fullSessionId = `Gifted~${Buffer.from(credsRaw).toString('base64')}`;
-
-            sessionData.sessionId = fullSessionId;
-            sessionData.status = 'completed';
-
-            const userJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
-            await sock.sendMessage(userJid, {
-              text: `*RICH-K-MD BOT SESSION ID*\n\n` +
-                    `Here is your bot session ID. Copy it completely:\n\n` +
-                    `\`\`\`${fullSessionId}\`\`\`\n\n` +
-                    `⚠️ *DO NOT SHARE THIS CODE WITH ANYONE!*`
-            });
-
-            await delay(25000);
-          }
-        } catch (err) {
-          console.error('Error sending session message:', err);
-        } finally {
-          try { await sock.logout(); } catch (e) {}
-          cleanFolder(sessionDir);
-          activeSessions.delete(id);
-        }
-      } else if (connection === 'close') {
-        const reason = lastDisconnect?.error?.output?.statusCode;
-        if (reason === DisconnectReason.loggedOut) {
-          sessionData.status = 'failed';
-          cleanFolder(sessionDir);
-          activeSessions.delete(id);
+        if (!res.headersSent) {
+          res.json({ id, code });
         }
       }
-    });
 
-    return res.json({ id, code });
-  } catch (error) {
-    cleanFolder(sessionDir);
-    activeSessions.delete(id);
-    return res.status(500).json({ error: error.message || 'Failed to generate code' });
+      sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect } = update;
+
+        if (connection === 'open') {
+          sessionData.status = 'connected';
+          try {
+            await delay(4000);
+            const credsPath = path.join(sessionDir, 'creds.json');
+            if (fs.existsSync(credsPath)) {
+              const credsRaw = fs.readFileSync(credsPath, 'utf-8');
+              const fullSessionId = `Gifted~${Buffer.from(credsRaw).toString('base64')}`;
+
+              sessionData.sessionId = fullSessionId;
+              sessionData.status = 'completed';
+
+              const userJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+              await sock.sendMessage(userJid, {
+                text: `*RICH-K-MD BOT SESSION ID*\n\n` +
+                      `Here is your bot session ID. Copy it completely:\n\n` +
+                      `\`\`\`${fullSessionId}\`\`\`\n\n` +
+                      `⚠️ *Keep this private! Paste it into RICH-K-MD Deploy Bot.*`
+              });
+
+              await delay(20000);
+            }
+          } catch (err) {
+            console.error('Error sending session DM:', err);
+          } finally {
+            try { await sock.logout(); } catch (e) {}
+            cleanFolder(sessionDir);
+            activeSessions.delete(id);
+          }
+        } else if (connection === 'close') {
+          const statusCode = lastDisconnect?.error?.output?.statusCode;
+          // If not logged out, WhatsApp is restarting socket to finalize pairing handshake
+          if (statusCode && statusCode !== DisconnectReason.loggedOut && statusCode !== 401) {
+            console.log('Reconnecting to finalize pairing...');
+            await delay(2000);
+            startPairingSocket();
+          } else {
+            sessionData.status = 'failed';
+            cleanFolder(sessionDir);
+            activeSessions.delete(id);
+          }
+        }
+      });
+
+    } catch (err) {
+      console.error('Socket error:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: err.message || 'Failed to start pairing' });
+      }
+      cleanFolder(sessionDir);
+      activeSessions.delete(id);
+    }
   }
+
+  startPairingSocket();
 });
 
 // ---------------- QR CODE ROUTE ----------------
@@ -130,101 +150,114 @@ app.get('/qr-code', async (req, res) => {
   const id = 'qr_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
   const sessionDir = path.join('/tmp', id);
 
-  try {
-    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-    const { version } = await fetchLatestBaileysVersion();
+  const sessionData = {
+    id,
+    dir: sessionDir,
+    sock: null,
+    qrDataUrl: null,
+    sessionId: null,
+    status: 'generating_qr'
+  };
+  activeSessions.set(id, sessionData);
 
-    const sock = makeWASocket({
-      version,
-      auth: state,
-      printQRInTerminal: false,
-      logger: pino({ level: 'silent' }),
-      browser: Browsers.macOS('Chrome')
-    });
+  let responded = false;
 
-    sock.ev.on('creds.update', saveCreds);
+  async function startQRSocket() {
+    try {
+      const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+      const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1015901307] }));
 
-    const sessionData = {
-      id,
-      dir: sessionDir,
-      sock,
-      qrDataUrl: null,
-      sessionId: null,
-      status: 'generating_qr'
-    };
-    activeSessions.set(id, sessionData);
+      const sock = makeWASocket({
+        version,
+        auth: {
+          creds: state.creds,
+          keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' }))
+        },
+        printQRInTerminal: false,
+        logger: pino({ level: 'fatal' }),
+        browser: ['Chrome (Linux)', '', '']
+      });
 
-    let responded = false;
+      sessionData.sock = sock;
+      sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('connection.update', async (update) => {
-      const { connection, lastDisconnect, qr } = update;
+      sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
 
-      if (qr && !sessionData.qrDataUrl) {
-        try {
-          const url = await QRCode.toDataURL(qr, { scale: 8, margin: 2 });
-          sessionData.qrDataUrl = url;
-          sessionData.status = 'qr_ready';
-          if (!responded) {
-            responded = true;
-            return res.json({ id, qr: url });
+        if (qr && !sessionData.qrDataUrl) {
+          try {
+            const url = await QRCode.toDataURL(qr, { scale: 8, margin: 2 });
+            sessionData.qrDataUrl = url;
+            sessionData.status = 'qr_ready';
+            if (!responded) {
+              responded = true;
+              return res.json({ id, qr: url });
+            }
+          } catch (e) {}
+        }
+
+        if (connection === 'open') {
+          sessionData.status = 'connected';
+          try {
+            await delay(4000);
+            const credsPath = path.join(sessionDir, 'creds.json');
+            if (fs.existsSync(credsPath)) {
+              const credsRaw = fs.readFileSync(credsPath, 'utf-8');
+              const fullSessionId = `Gifted~${Buffer.from(credsRaw).toString('base64')}`;
+
+              sessionData.sessionId = fullSessionId;
+              sessionData.status = 'completed';
+
+              const userJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+              await sock.sendMessage(userJid, {
+                text: `*RICH-K-MD BOT SESSION ID*\n\n` +
+                      `Here is your bot session ID:\n\n` +
+                      `\`\`\`${fullSessionId}\`\`\`\n\n` +
+                      `⚠️ *Keep this private!*`
+              });
+
+              await delay(20000);
+            }
+          } catch (err) {
+            console.error('Error sending session DM:', err);
+          } finally {
+            try { await sock.logout(); } catch (e) {}
+            cleanFolder(sessionDir);
+            activeSessions.delete(id);
           }
-        } catch (e) {}
-      }
-
-      if (connection === 'open') {
-        sessionData.status = 'connected';
-        try {
-          await delay(3000);
-          const credsPath = path.join(sessionDir, 'creds.json');
-          if (fs.existsSync(credsPath)) {
-            const credsRaw = fs.readFileSync(credsPath, 'utf-8');
-            const fullSessionId = `Gifted~${Buffer.from(credsRaw).toString('base64')}`;
-
-            sessionData.sessionId = fullSessionId;
-            sessionData.status = 'completed';
-
-            const userJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
-            await sock.sendMessage(userJid, {
-              text: `*RICH-K-MD BOT SESSION ID*\n\n` +
-                    `Here is your bot session ID:\n\n` +
-                    `\`\`\`${fullSessionId}\`\`\`\n\n` +
-                    `⚠️ *DO NOT SHARE THIS CODE WITH ANYONE!*`
-            });
-
-            await delay(25000);
+        } else if (connection === 'close') {
+          const statusCode = lastDisconnect?.error?.output?.statusCode;
+          if (statusCode && statusCode !== DisconnectReason.loggedOut && statusCode !== 401) {
+            await delay(2000);
+            startQRSocket();
+          } else {
+            sessionData.status = 'failed';
+            cleanFolder(sessionDir);
+            activeSessions.delete(id);
           }
-        } catch (err) {
-          console.error('Error sending session message:', err);
-        } finally {
-          try { await sock.logout(); } catch (e) {}
+        }
+      });
+
+      setTimeout(() => {
+        if (!responded) {
+          responded = true;
           cleanFolder(sessionDir);
           activeSessions.delete(id);
+          res.status(504).json({ error: 'QR code timed out. Please try again.' });
         }
-      } else if (connection === 'close') {
-        const reason = lastDisconnect?.error?.output?.statusCode;
-        if (reason === DisconnectReason.loggedOut) {
-          sessionData.status = 'failed';
-          cleanFolder(sessionDir);
-          activeSessions.delete(id);
-        }
-      }
-    });
+      }, 20000);
 
-    // Timeout if QR generation takes too long
-    setTimeout(() => {
+    } catch (err) {
+      cleanFolder(sessionDir);
+      activeSessions.delete(id);
       if (!responded) {
         responded = true;
-        cleanFolder(sessionDir);
-        activeSessions.delete(id);
-        res.status(504).json({ error: 'QR code timed out. Please try again.' });
+        return res.status(500).json({ error: err.message || 'QR generation failed' });
       }
-    }, 20000);
-
-  } catch (err) {
-    cleanFolder(sessionDir);
-    activeSessions.delete(id);
-    return res.status(500).json({ error: err.message || 'QR generation failed' });
+    }
   }
+
+  startQRSocket();
 });
 
 // ---------------- STATUS ROUTE ----------------
@@ -246,4 +279,3 @@ app.get('/status', (req, res) => {
 app.listen(PORT, () => {
   console.log(`RICH-K-MD Session Server running on port ${PORT}`);
 });
-
